@@ -7,12 +7,10 @@ module sui_payroll::sui_payroll {
     use sui::balance::{Self, Balance};
     use sui::tx_context::{Self, TxContext};
     use sui::table::{Self, Table};
-
     // Errors
     const EInsufficientBalance: u64 = 1;
     const ENotOrganization: u64 = 2;
     const ENotEmployee: u64 = 4;
-
     // Structs
     struct Organization has key, store {
         id: UID,
@@ -24,12 +22,10 @@ module sui_payroll::sui_payroll {
         paid_payrolls: Table<ID, Payroll>,
         principal: address,
     }
-
     struct OrganizationCap has key {
         id: UID,
         for: ID,
     }
-
     struct Employee has key, store {
         id: UID,
         name: String,
@@ -40,7 +36,6 @@ module sui_payroll::sui_payroll {
         designation: String,
         hireDate: String,
     }
-
     struct Payroll has key, store {
         id: UID,
         employee: address,
@@ -51,8 +46,7 @@ module sui_payroll::sui_payroll {
         allowances: u64,
         netSalary: u64,
     }
-
-    public fun add_organization_info(
+    public entry fun add_organization_info(
         name: String,
         email: String,
         ctx: &mut TxContext
@@ -70,44 +64,43 @@ module sui_payroll::sui_payroll {
             paid_payrolls: table::new<ID, Payroll>(ctx),
         };
         transfer::share_object(organization);
-
         OrganizationCap {
             id: object::new(ctx),
             for: inner,
         }
     }
-
-    // deposit
-    public fun deposit(
+    // Deposit
+    public entry fun deposit(
         organization: &mut Organization,
         amount: Coin<SUI>,
     ) {
         let coin = coin::into_balance(amount);
         balance::join(&mut organization.balance, coin);
     }
-
-    // withdraw
-    public fun withdraw_organization_balance(
+    // Withdraw
+    public entry fun withdraw_organization_balance(
         cap: &OrganizationCap,
         organization: &mut Organization,
         amount: u64,
         ctx: &mut TxContext
     ) : Coin<SUI> {
         assert!(cap.for == object::id(organization), ENotOrganization);
+        assert!(balance::value(&organization.balance) >= amount, EInsufficientBalance);
         let payment = coin::take(&mut organization.balance, amount, ctx);
         payment
     }
-
-    public fun add_employee_info(
+    public entry fun add_employee_info(
+        organization: &mut Organization,
         name: String,
         home: String,
         department: String,
         designation: String,
         hireDate: String,
         ctx: &mut TxContext
-    ) : Employee {
+    ) {
+        assert!(tx_context::sender(ctx) == organization.principal, ENotOrganization);
         let id = object::new(ctx);
-        Employee {
+        let employee = Employee {
             id,
             name,
             home,
@@ -116,23 +109,23 @@ module sui_payroll::sui_payroll {
             department,
             designation,
             hireDate,
-        }
+        };
+        table::add(&mut organization.employees, object::uid_to_inner(&employee.id), employee);
     }
-
-    //   employee withdraw
-    public fun withdraw_employee_balance(
+    // Employee withdraw
+    public entry fun withdraw_employee_balance(
         employee: &mut Employee,
         amount: u64,
         ctx: &mut TxContext
     ) : Coin<SUI> {
         assert!(employee.principal == tx_context::sender(ctx), ENotEmployee);
+        assert!(balance::value(&employee.balance) >= amount, EInsufficientBalance);
         let payment = coin::take(&mut employee.balance, amount, ctx);
         payment
     }
-
-    public fun add_payroll_info(
+    public entry fun add_payroll_info(
         organization: &mut Organization,
-        employee: &mut Employee,
+        employee_id: ID,
         date: String,
         month: String,
         year: String,
@@ -141,6 +134,10 @@ module sui_payroll::sui_payroll {
         netSalary: u64,
         ctx: &mut TxContext
     ) {
+        assert!(tx_context::sender(ctx) == organization.principal, ENotOrganization);
+        let employee = table::borrow_mut(&mut organization.employees, employee_id);
+        let total = basicSalary + allowances;
+        assert!(balance::value(&organization.balance) >= total, EInsufficientBalance);
         let id = object::new(ctx);
         let payroll = Payroll {
             id,
@@ -152,30 +149,16 @@ module sui_payroll::sui_payroll {
             allowances,
             netSalary,
         };
-
-        let total = basicSalary + allowances;
-        assert!(balance::value(&organization.balance) >= total, EInsufficientBalance);
         let payment = coin::take(&mut organization.balance, total, ctx);
         coin::put(&mut employee.balance, payment);
-
-        table::add<ID, Payroll>(&mut organization.new_payrolls, object::uid_to_inner(&payroll.id), payroll);
+        table::add(&mut organization.new_payrolls, object::uid_to_inner(&payroll.id), payroll);
     }
-
-    public fun remove_payroll_info(
+    public entry fun remove_payroll_info(
         organization: &mut Organization,
-        payroll: ID,
+        payroll_id: ID,
     ) {
-        let payroll = table::remove(&mut organization.new_payrolls, payroll);
-        let Payroll {
-            id,
-            employee: _,
-            date: _,
-            month: _,
-            year: _,
-            basicSalary: _,
-            allowances: _,
-            netSalary: _,
-        } = payroll;
-        object::delete(id);
+        assert!(tx_context::sender(ctx) == organization.principal, ENotOrganization);
+        let payroll = table::remove(&mut organization.new_payrolls, payroll_id);
+        object::delete(payroll.id);
     }
 }
